@@ -1,0 +1,405 @@
+<?php
+/**
+ * Extroverting R2 Media — AI Enrichment
+ *
+ * Handles AI-powered metadata enrichment for media files using Cloudflare
+ * Workers AI. Requests image descriptions, titles, and tags from the
+ * Cloudflare Worker, then writes the metadata back to source files using
+ * exiftool (Ext_Exif_Writer).
+ *
+ * @package Extroverting_R2_Media
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+/**
+ * Class Ext_AI_Enrichment
+ */
+class Ext_AI_Enrichment {
+
+	/**
+	 * Cloudflare Worker URL
+	 *
+	 * @var string
+	 */
+	private $worker_url;
+
+	/**
+	 * Worker authentication token
+	 *
+	 * @var string
+	 */
+	private $worker_token;
+
+	/**
+	 * ExifWriter instance
+	 *
+	 * @var Ext_Exif_Writer
+	 */
+	private $exif_writer;
+
+	/**
+	 * Constructor
+	 */
+	public function __construct() {
+		$this->worker_url   = $this->get_option( 'ext_ai_worker_url', 'https://extroverting-media-enrichment.workers.dev' );
+		$this->worker_token = $this->get_option( 'ext_ai_worker_token', '' );
+		$this->exif_writer  = new Ext_Exif_Writer();
+
+		// Hook into WordPress media upload.
+		add_action( 'add_attachment', [ $this, 'handle_new_attachment' ] );
+		add_action( 'edit_attachment', [ $this, 'handle_attachment_update' ] );
+
+		// Async single-item processing (scheduled in schedule_enrichment()).
+		add_action( 'ext_ai_enrich_single', [ $this, 'enrich_attachment' ] );
+
+		// Add admin menu for manual enrichment.
+		add_action( 'admin_menu', [ $this, 'add_admin_menu' ] );
+
+		// WP-Cron for batch processing.
+		add_action( 'ext_ai_enrichment_cron', [ $this, 'batch_enrichment_job' ] );
+	}
+
+	/**
+	 * Handle new attachment upload
+	 *
+	 * @param int $attachment_id WordPress attachment ID
+	 */
+	public function handle_new_attachment( $attachment_id ) {
+		// Only process images.
+		$mime_type = get_post_mime_type( $attachment_id );
+		if ( ! $this->is_supported_image( $mime_type ) ) {
+			return;
+		}
+
+		// Schedule async enrichment.
+		$this->schedule_enrichment( $attachment_id );
+	}
+
+	/**
+	 * Handle attachment update
+	 *
+	 * @param int $attachment_id WordPress attachment ID
+	 */
+	public function handle_attachment_update( $attachment_id ) {
+		// Check if enrichment is needed.
+		$needs_enrichment = get_post_meta( $attachment_id, '_ext_ai_needs_enrichment', true );
+		if ( $needs_enrichment ) {
+			$this->schedule_enrichment( $attachment_id );
+		}
+	}
+
+	/**
+	 * Schedule AI enrichment for an attachment
+	 *
+	 * @param int $attachment_id WordPress attachment ID
+	 */
+	public function schedule_enrichment( $attachment_id ) {
+		$file_path = get_attached_file( $attachment_id );
+		if ( ! $file_path || ! file_exists( $file_path ) ) {
+			return;
+		}
+
+		// Mark as pending enrichment.
+		update_post_meta( $attachment_id, '_ext_ai_status', 'pending' );
+		update_post_meta( $attachment_id, '_ext_ai_enqueued', time() );
+
+		// Use WP-Cron for async processing.
+		wp_schedule_single_event( time(), 'ext_ai_enrich_single', [ $attachment_id ] );
+	}
+
+	/**
+	 * Enrich a single attachment
+	 *
+	 * @param int $attachment_id WordPress attachment ID
+	 * @return array Enrichment result
+	 */
+	public function enrich_attachment( $attachment_id ) {
+		$file_path = get_attached_file( $attachment_id );
+		$filename  = basename( $file_path );
+
+		if ( ! $file_path || ! file_exists( $file_path ) ) {
+			return [ 'error' => 'File not found' ];
+		}
+
+		// Read image file.
+		$image_data = file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		if ( false === $image_data ) {
+			return [ 'error' => 'Failed to read file' ];
+		}
+
+		// Encode as base64 for API request.
+		$image_base64 = base64_encode( $image_data ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions
+
+		// Request enrichment from Cloudflare Worker.
+		$enrichment = $this->request_worker_enrichment( $image_base64, $filename, $attachment_id );
+
+		if ( is_wp_error( $enrichment ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_status', 'failed' );
+			update_post_meta( $attachment_id, '_ext_ai_error', $enrichment->get_error_message() );
+			return [ 'error' => $enrichment->get_error_message() ];
+		}
+
+		// Save enrichment metadata to WordPress.
+		$this->save_enrichment_meta( $attachment_id, $enrichment );
+
+		// Write metadata back to source file using exiftool.
+		$write_result = $this->exif_writer->write_metadata_to_file( $file_path, $enrichment );
+
+		if ( is_wp_error( $write_result ) ) {
+			error_log( 'extroverting R2 media: exiftool write failed: ' . $write_result->get_error_message() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions
+			update_post_meta( $attachment_id, '_ext_ai_exif_status', 'failed' );
+		} else {
+			update_post_meta( $attachment_id, '_ext_ai_exif_status', 'success' );
+			update_post_meta( $attachment_id, '_ext_ai_exif_written', current_time( 'mysql' ) );
+		}
+
+		// Update status.
+		update_post_meta( $attachment_id, '_ext_ai_status', 'completed' );
+		update_post_meta( $attachment_id, '_ext_ai_enriched', current_time( 'mysql' ) );
+
+		return $enrichment;
+	}
+
+	/**
+	 * Request enrichment from Cloudflare Worker
+	 *
+	 * @param string $image_base64 Base64-encoded image data
+	 * @param string $filename     Original filename
+	 * @param int    $media_id     WordPress attachment ID
+	 * @return array|WP_Error Enrichment result or error
+	 */
+	private function request_worker_enrichment( $image_base64, $filename, $media_id ) {
+		$body = wp_json_encode(
+			[
+				'image'    => $image_base64,
+				'filename' => $filename,
+				'media_id' => $media_id,
+			]
+		);
+
+		$args = [
+			'method'  => 'POST',
+			'body'    => $body,
+			'headers' => [
+				'Content-Type' => 'application/json',
+			],
+			'timeout' => 60, // AI requests can take time.
+		];
+
+		if ( ! empty( $this->worker_token ) ) {
+			$args['headers']['Authorization'] = 'Bearer ' . $this->worker_token;
+		}
+
+		$response = wp_remote_post( $this->worker_url . '/enrich', $args );
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$status_code = wp_remote_retrieve_response_code( $response );
+		if ( 200 !== $status_code ) {
+			return new WP_Error( 'worker_error', 'Worker returned status ' . $status_code );
+		}
+
+		$body = wp_remote_retrieve_body( $response );
+		$data = json_decode( $body, true );
+
+		if ( ! $data || ! isset( $data['enrichment'] ) ) {
+			return new WP_Error( 'worker_error', 'Invalid worker response' );
+		}
+
+		return $data['enrichment'];
+	}
+
+	/**
+	 * Save enrichment metadata to WordPress post meta
+	 *
+	 * @param int   $attachment_id WordPress attachment ID
+	 * @param array $enrichment    Enrichment data from Worker
+	 */
+	private function save_enrichment_meta( $attachment_id, $enrichment ) {
+		// Save AI-generated description.
+		if ( ! empty( $enrichment['description'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_description', $enrichment['description'] );
+			// Also update WordPress post content for media.
+			wp_update_post(
+				[
+					'ID'           => $attachment_id,
+					'post_content' => $enrichment['description'],
+				]
+			);
+		}
+
+		// Save AI-generated title.
+		if ( ! empty( $enrichment['title'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_title', $enrichment['title'] );
+			// Also update WordPress post title.
+			wp_update_post(
+				[
+					'ID'         => $attachment_id,
+					'post_title' => $enrichment['title'],
+				]
+			);
+		}
+
+		// Save tags.
+		if ( ! empty( $enrichment['tags'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_tags', $enrichment['tags'] );
+			// Add as WordPress tags.
+			wp_set_post_tags( $attachment_id, $enrichment['tags'] );
+		}
+
+		// Save categories.
+		if ( ! empty( $enrichment['categories'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_categories', $enrichment['categories'] );
+		}
+
+		// Save alt text.
+		if ( ! empty( $enrichment['alt_text'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_alt_text', $enrichment['alt_text'] );
+			update_post_meta( $attachment_id, '_wp_attachment_image_alt', $enrichment['alt_text'] );
+		}
+
+		// Save objects detected.
+		if ( ! empty( $enrichment['objects'] ) ) {
+			update_post_meta( $attachment_id, '_ext_ai_objects', $enrichment['objects'] );
+		}
+
+		// Save full enrichment data.
+		update_post_meta( $attachment_id, '_ext_ai_enrichment', $enrichment );
+	}
+
+	/**
+	 * Check if MIME type is a supported image format
+	 *
+	 * @param string $mime_type MIME type
+	 * @return bool
+	 */
+	private function is_supported_image( $mime_type ) {
+		return in_array(
+			$mime_type,
+			[
+				'image/jpeg',
+				'image/png',
+				'image/gif',
+				'image/webp',
+			],
+			true
+		);
+	}
+
+	/**
+	 * Batch enrichment job (WP-Cron)
+	 */
+	public function batch_enrichment_job() {
+		$attachments = get_posts(
+			[
+				'post_type'   => 'attachment',
+				'post_status' => 'inherit',
+				'numberposts' => 10, // Process 10 at a time.
+				'meta_key'    => '_ext_ai_status', // phpcs:ignore WordPress.DB.SlowDBQuery
+				'meta_value'  => 'pending', // phpcs:ignore WordPress.DB.SlowDBQuery
+			]
+		);
+
+		foreach ( $attachments as $attachment ) {
+			$this->enrich_attachment( $attachment->ID );
+		}
+	}
+
+	/**
+	 * Add admin menu
+	 */
+	public function add_admin_menu() {
+		add_submenu_page(
+			'upload.php',
+			'AI Enrichment',
+			'AI Enrichment',
+			'manage_options',
+			'ext-ai-enrichment',
+			[ $this, 'render_admin_page' ]
+		);
+	}
+
+	/**
+	 * Render admin page
+	 */
+	public function render_admin_page() {
+		?>
+		<div class="wrap">
+			<h1>AI Media Enrichment</h1>
+			<p>Cloudflare Workers AI enrichment status for media library.</p>
+
+			<table class="widefat striped">
+				<thead>
+					<tr>
+						<th>Media</th>
+						<th>Status</th>
+						<th>Description</th>
+						<th>Tags</th>
+						<th>EXIF Written</th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php
+					$attachments = get_posts(
+						[
+							'post_type'   => 'attachment',
+							'post_status' => 'inherit',
+							'numberposts' => 50,
+							'meta_key'    => '_ext_ai_status', // phpcs:ignore WordPress.DB.SlowDBQuery
+						]
+					);
+
+					foreach ( $attachments as $attachment ) {
+						$status      = get_post_meta( $attachment->ID, '_ext_ai_status', true );
+						$description = get_post_meta( $attachment->ID, '_ext_ai_description', true );
+						$tags        = get_post_meta( $attachment->ID, '_ext_ai_tags', true );
+						$exif_status = get_post_meta( $attachment->ID, '_ext_ai_exif_status', true );
+
+						$status_label = 'Not processed';
+						if ( 'pending' === $status ) {
+							$status_label = 'Pending';
+						}
+						if ( 'completed' === $status ) {
+							$status_label = 'Completed';
+						}
+						if ( 'failed' === $status ) {
+							$status_label = 'Failed';
+						}
+
+						$exif_label = 'No';
+						if ( 'success' === $exif_status ) {
+							$exif_label = 'Yes';
+						}
+						if ( 'failed' === $exif_status ) {
+							$exif_label = 'Failed';
+						}
+
+						echo '<tr>';
+						echo '<td>' . esc_html( $attachment->post_title ) . '</td>';
+						echo '<td>' . esc_html( $status_label ) . '</td>';
+						echo '<td>' . esc_html( substr( $description, 0, 50 ) ) . '</td>';
+						echo '<td>' . esc_html( is_array( $tags ) ? implode( ', ', $tags ) : '' ) . '</td>';
+						echo '<td>' . esc_html( $exif_label ) . '</td>';
+						echo '</tr>';
+					}
+					?>
+				</tbody>
+			</table>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Get option from WordPress
+	 *
+	 * @param string $key     Option key
+	 * @param mixed  $default Default value
+	 * @return mixed
+	 */
+	private function get_option( $key, $default = '' ) {
+		return get_option( $key, $default );
+	}
+}
