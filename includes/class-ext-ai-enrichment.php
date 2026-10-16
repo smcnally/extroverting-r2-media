@@ -326,19 +326,39 @@ class Ext_AI_Enrichment {
 	 * Render admin page
 	 */
 	public function render_admin_page() {
+		// Handle retry action (nonce-checked) before any output.
+		$retry_notice = '';
+		if ( isset( $_GET['ext_retry'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$retry_id = absint( $_GET['ext_retry'] );
+			$nonce    = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+			if ( $retry_id && current_user_can( 'manage_options' ) && wp_verify_nonce( $nonce, 'ext_retry_' . $retry_id ) ) {
+				delete_post_meta( $retry_id, '_ext_ai_error' );
+				update_post_meta( $retry_id, '_ext_ai_status', 'pending' );
+				wp_schedule_single_event( time() + 5, 'ext_ai_enrich_single', [ $retry_id ] );
+				spawn_cron();
+				$retry_notice = 'Attachment ' . $retry_id . ' re-queued for enrichment — refresh in a moment to see the result.';
+			} else {
+				$retry_notice = 'Retry failed: invalid request.';
+			}
+		}
 		?>
 		<div class="wrap">
 			<h1>AI Media Enrichment</h1>
+			<?php if ( $retry_notice ) : ?>
+				<div class="notice notice-info is-dismissible"><p><?php echo esc_html( $retry_notice ); ?></p></div>
+			<?php endif; ?>
 			<p>Cloudflare Workers AI enrichment status for media library.</p>
 
 			<table class="widefat striped">
 				<thead>
 					<tr>
+						<th>ID</th>
 						<th>Media</th>
 						<th>Status</th>
 						<th>Description</th>
 						<th>Tags</th>
 						<th>EXIF Written</th>
+						<th>Error</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -357,6 +377,7 @@ class Ext_AI_Enrichment {
 						$description = get_post_meta( $attachment->ID, '_ext_ai_description', true );
 						$tags        = get_post_meta( $attachment->ID, '_ext_ai_tags', true );
 						$exif_status = get_post_meta( $attachment->ID, '_ext_ai_exif_status', true );
+						$error       = get_post_meta( $attachment->ID, '_ext_ai_error', true );
 
 						$status_label = 'Not processed';
 						if ( 'pending' === $status ) {
@@ -369,6 +390,11 @@ class Ext_AI_Enrichment {
 							$status_label = 'Failed';
 						}
 
+						$retry_link = '';
+						if ( 'failed' === $status ) {
+							$retry_link = ' <a class="button button-small" href="' . esc_url( wp_nonce_url( admin_url( 'upload.php?page=ext-ai-enrichment&ext_retry=' . $attachment->ID ), 'ext_retry_' . $attachment->ID ) ) . '">Retry</a>';
+						}
+
 						$exif_label = 'No';
 						if ( 'success' === $exif_status ) {
 							$exif_label = 'Yes';
@@ -378,11 +404,13 @@ class Ext_AI_Enrichment {
 						}
 
 						echo '<tr>';
+						echo '<td>' . esc_html( $attachment->ID ) . '</td>';
 						echo '<td>' . esc_html( $attachment->post_title ) . '</td>';
-						echo '<td>' . esc_html( $status_label ) . '</td>';
+						echo '<td>' . esc_html( $status_label ) . $retry_link . '</td>';
 						echo '<td>' . esc_html( substr( $description, 0, 50 ) ) . '</td>';
 						echo '<td>' . esc_html( is_array( $tags ) ? implode( ', ', $tags ) : '' ) . '</td>';
 						echo '<td>' . esc_html( $exif_label ) . '</td>';
+						echo '<td>' . esc_html( mb_substr( (string) $error, 0, 200 ) ) . '</td>';
 						echo '</tr>';
 					}
 					?>
