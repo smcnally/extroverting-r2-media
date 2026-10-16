@@ -42,7 +42,7 @@ class Ext_AI_Enrichment {
 	 * Constructor
 	 */
 	public function __construct() {
-		$this->worker_url   = $this->get_option( 'ext_ai_worker_url', 'https://extroverting-media-enrichment.workers.dev' );
+		$this->worker_url   = $this->get_option( 'ext_ai_worker_url', 'https://extroverting-media-enrichment.steve-8da.workers.dev' );
 		$this->worker_token = $this->get_option( 'ext_ai_worker_token', '' );
 		$this->exif_writer  = new Ext_Exif_Writer();
 

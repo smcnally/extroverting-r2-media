@@ -56,7 +56,7 @@ add_action( 'plugins_loaded', 'ext_r2_media_boot' );
  * @return void
  */
 function ext_r2_media_activate() {
-	add_option( 'ext_ai_worker_url', 'https://extroverting-media-enrichment.workers.dev' );
+	add_option( 'ext_ai_worker_url', 'https://extroverting-media-enrichment.steve-8da.workers.dev' );
 	add_option( 'ext_ai_worker_token', '' );
 	add_option( 'ext_exiftool_binary', 'exiftool' );
 
@@ -114,7 +114,8 @@ function ext_r2_media_register_settings() {
  */
 function ext_r2_media_field_url() {
 	printf(
-		'<input type="url" class="regular-text" name="ext_ai_worker_url" value="%s" placeholder="https://extroverting-media-enrichment.<account>.workers.dev" />',
+		'<input type="url" class="regular-text" name="ext_ai_worker_url" value="%s" placeholder="https://<worker-name>.<account-subdomain>.workers.dev" />
+	<p class="description">Full deployed URL including the account subdomain, e.g. https://extroverting-media-enrichment.steve-8da.workers.dev — a URL without the account subdomain will not resolve.</p>',
 		esc_attr( get_option( 'ext_ai_worker_url', '' ) )
 	);
 }
