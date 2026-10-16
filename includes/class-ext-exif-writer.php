@@ -72,7 +72,10 @@ class Ext_Exif_Writer {
 		}
 
 		// Each element escaped individually; nothing is interpolated raw.
+		// -overwrite_original: replace in place — without it exiftool leaves a
+		// <file>_original backup beside every enriched file.
 		$cmd = escapeshellarg( $binary );
+		$cmd .= ' ' . escapeshellarg( '-overwrite_original' );
 		foreach ( $args as $arg ) {
 			$cmd .= ' ' . escapeshellarg( $arg );
 		}

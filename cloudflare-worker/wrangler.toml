@@ -15,11 +15,11 @@ binding = "AI"
 # KV for caching enrichment results
 [[kv_namespaces]]
 binding = "METADATA_CACHE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "59b99a2c08674eeebd1f31456fbe5808"
 
 # Cron trigger for batch processing
 [triggers]
-cron = ["0 2 * * *"]  # Daily at 2 AM UTC
+crons = ["0 2 * * *"]  # Daily at 2 AM UTC
 
 # Environment variables
 [vars]
