@@ -1,0 +1,31 @@
+name = "extroverting-media-enrichment"
+main = "src/index.js"
+compatibility_date = "2025-10-15"
+compatibility_flags = ["nodejs_compat"]
+
+# R2 Bucket for media storage
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "extroverting-media"
+
+# Workers AI for image analysis and description generation
+[ai]
+binding = "AI"
+
+# KV for caching enrichment results
+[[kv_namespaces]]
+binding = "METADATA_CACHE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Cron trigger for batch processing
+[triggers]
+cron = ["0 2 * * *"]  # Daily at 2 AM UTC
+
+# Environment variables
+[vars]
+WORDPRESS_SITE_URL = "https://extroverting.com"
+ENRICHMENT_LOG_LEVEL = "info"
+
+# Auth: set a secret with `npx wrangler secret put WORKER_TOKEN`, then use the
+# same value as the "Worker Token" in WP Settings > Media. Until the secret is
+# set, /enrich and /upload accept unauthenticated requests (dev convenience).

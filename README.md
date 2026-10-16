@@ -43,8 +43,9 @@ Settings > Media in wp-admin (or options table):
   `../extroverting-theme-repo/wordpress/wp-content/plugins/extroverting-r2-media/`
   (copied, not symlinked, matching the `extroverting-core` convention).
   Re-copy after making changes here.
-- The Worker code lives in `../cloudflare-worker/` (wrangler deploy required for
+- The Worker code lives in `./cloudflare-worker/` (wrangler deploy required for
   end-to-end enrichment; without it, enrichment status is `failed` by design).
+  Deploy steps and notes are in `cloudflare-worker/DEPLOY.md`.
 
 ## Files
 
