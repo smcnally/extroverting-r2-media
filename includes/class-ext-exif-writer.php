@@ -76,7 +76,7 @@ class Ext_Exif_Writer {
 		foreach ( $args as $arg ) {
 			$cmd .= ' ' . escapeshellarg( $arg );
 		}
-		$cmd .= ' 2>&1';
+		$cmd .= ' ' . escapeshellarg( $real_path ) . ' 2>&1';
 
 		exec( $cmd, $output, $exit_code );
 
@@ -198,8 +198,11 @@ class Ext_Exif_Writer {
 			if ( '' !== $accessibility_alt ) {
 				$args[] = '-XMP:AltTextAccessibility-en-US=' . $accessibility_alt;
 			}
-			foreach ( array_unique( array_merge( $categories, $tags ) ) as $category ) {
-				$args[] = '-XMP:Categories=' . $category;
+			// XMP Categories is a plain string tag — one joined, escaped assignment
+			// replaces cleanly, keeping re-enrichment idempotent.
+			$category_values = array_unique( array_merge( $categories, $tags ) );
+			if ( ! empty( $category_values ) ) {
+				$args[] = '-XMP:Categories=' . implode( ', ', $category_values );
 			}
 			$args[] = '-XMP:ModifyDate=' . $this->current_xmp_date();
 		}
