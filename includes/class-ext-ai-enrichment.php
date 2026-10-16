@@ -326,6 +326,17 @@ class Ext_AI_Enrichment {
 	 * Render admin page
 	 */
 	public function render_admin_page() {
+		// Handle connection self-test (nonce-checked) before any output.
+		$test_notice = '';
+		if ( isset( $_GET['ext_test_worker'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$nonce = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+			if ( current_user_can( 'manage_options' ) && wp_verify_nonce( $nonce, 'ext_test_worker' ) ) {
+				$test_notice = $this->run_connection_test();
+			} else {
+				$test_notice = 'Connection test failed: invalid request.';
+			}
+		}
+
 		// Handle retry action (nonce-checked) before any output.
 		$retry_notice = '';
 		if ( isset( $_GET['ext_retry'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -343,9 +354,11 @@ class Ext_AI_Enrichment {
 		}
 		?>
 		<div class="wrap">
-			<h1>AI Media Enrichment</h1>
-			<?php if ( $retry_notice ) : ?>
-				<div class="notice notice-info is-dismissible"><p><?php echo esc_html( $retry_notice ); ?></p></div>
+			<h1>AI Media Enrichment
+				<a class="button button-secondary" style="vertical-align:middle" href="<?php echo esc_url( wp_nonce_url( admin_url( 'upload.php?page=ext-ai-enrichment&ext_test_worker=1' ), 'ext_test_worker' ) ); ?>">Test Worker Connection</a>
+			</h1>
+			<?php if ( $retry_notice || $test_notice ) : ?>
+				<div class="notice notice-info is-dismissible"><p><?php echo esc_html( trim( $retry_notice . ' ' . $test_notice ) ); ?></p></div>
 			<?php endif; ?>
 			<p>Cloudflare Workers AI enrichment status for media library.</p>
 
@@ -418,6 +431,57 @@ class Ext_AI_Enrichment {
 			</table>
 		</div>
 		<?php
+	}
+
+	/**
+	 * One-click diagnostic: is the Worker reachable, and does the stored token
+	 * authenticate? GET /metadata/<test> must return 404 (reachable); POST
+	 * /enrich with an empty image must return 400 (token accepted) — a 401
+	 * means the stored token does not match the deployed WORKER_TOKEN secret.
+	 *
+	 * @return string Human-readable verdict.
+	 */
+	private function run_connection_test() {
+		$lines = [];
+
+		$get = wp_remote_get( trailingslashit( $this->worker_url ) . 'metadata/__ext_conn_test__', [ 'timeout' => 15 ] );
+		if ( is_wp_error( $get ) ) {
+			return 'UNREACHABLE: ' . $get->get_error_message() . ' — the host cannot reach the Worker URL.';
+		}
+		$get_code = wp_remote_retrieve_response_code( $get );
+		$lines[]  = 'Reachability: HTTP ' . $get_code . ( 404 === $get_code ? ' (expected — Worker reachable)' : ' (unexpected)' );
+
+		$headers = [ 'Content-Type' => 'application/json' ];
+		if ( ! empty( $this->worker_token ) ) {
+			$headers['Authorization'] = 'Bearer ' . $this->worker_token;
+		}
+		$post = wp_remote_post(
+			$this->worker_url . '/enrich',
+			[
+				'timeout' => 15,
+				'headers' => $headers,
+				'body'    => wp_json_encode(
+					[
+						'image'    => '',
+						'filename' => '__ext_conn_test__',
+						'media_id' => 0,
+					]
+				),
+			]
+		);
+		if ( is_wp_error( $post ) ) {
+			$lines[] = 'Enrich/auth: ' . $post->get_error_message();
+		} else {
+			$post_code = wp_remote_retrieve_response_code( $post );
+			$verdicts  = [
+				400 => 'OK — token accepted (route and auth working)',
+				401 => 'TOKEN MISMATCH — stored Worker Token does not match the deployed WORKER_TOKEN secret',
+				404 => 'Route not found — check the Worker URL is exactly the workers.dev URL with no extra path',
+			];
+			$lines[]  = 'Auth check: HTTP ' . $post_code . ' — ' . ( $verdicts[ $post_code ] ?? 'unexpected response: ' . substr( (string) wp_remote_retrieve_body( $post ), 0, 120 ) );
+		}
+
+		return implode( ' | ', $lines );
 	}
 
 	/**

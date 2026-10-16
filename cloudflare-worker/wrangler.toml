@@ -3,6 +3,9 @@ main = "src/index.js"
 compatibility_date = "2025-10-15"
 compatibility_flags = ["nodejs_compat"]
 
+# Structured logs (queryable in dash: Workers & Pages -> extroverting-media-enrichment -> Logs)
+observability = { enabled = true }
+
 # R2 Bucket for media storage
 [[r2_buckets]]
 binding = "R2_BUCKET"
