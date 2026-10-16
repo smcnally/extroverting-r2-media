@@ -122,8 +122,8 @@ class Ext_AI_Enrichment {
 			return [ 'error' => 'File not found' ];
 		}
 
-		// Read image file.
-		$image_data = file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		// Prepare image: downscale large originals before the API call.
+		$image_data = $this->prepare_image_data( $file_path );
 		if ( false === $image_data ) {
 			return [ 'error' => 'Failed to read file' ];
 		}
@@ -184,7 +184,7 @@ class Ext_AI_Enrichment {
 			'headers' => [
 				'Content-Type' => 'application/json',
 			],
-			'timeout' => 60, // AI requests can take time.
+			'timeout' => 120, // AI requests on large originals can take a while.
 		];
 
 		if ( ! empty( $this->worker_token ) ) {
@@ -268,6 +268,39 @@ class Ext_AI_Enrichment {
 
 		// Save full enrichment data.
 		update_post_meta( $attachment_id, '_ext_ai_enrichment', $enrichment );
+	}
+
+	/**
+	 * Prepare the image payload for the Worker: full-resolution originals
+	 * (multi-MB screenshots) inflate ~33% in base64 and make vision inference
+	 * slow. Downscale to max 1024px JPEG q82 in a temp file; fall back to the
+	 * raw bytes if the editor is unavailable.
+	 *
+	 * @param string $file_path Absolute path to the media file.
+	 * @return string|false Image bytes, or false on failure.
+	 */
+	private function prepare_image_data( $file_path ) {
+		$editor = wp_get_image_editor( $file_path );
+		if ( is_wp_error( $editor ) ) {
+			return file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
+
+		$size = $editor->get_size();
+		if ( ! is_wp_error( $size ) && max( $size['width'], $size['height'] ) > 1024 ) {
+			$editor->resize( 1024, 1024, false );
+		}
+		$editor->set_quality( 82 );
+
+		$tmp   = trailingslashit( get_temp_dir() ) . uniqid( 'ext-ai-' ) . '.jpg';
+		$saved = $editor->save( $tmp, 'image/jpeg' );
+		if ( is_wp_error( $saved ) || empty( $saved['path'] ) || ! file_exists( $saved['path'] ) ) {
+			return file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
+
+		$data = file_get_contents( $saved['path'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		unlink( $saved['path'] );
+
+		return $data;
 	}
 
 	/**

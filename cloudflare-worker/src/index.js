@@ -137,6 +137,7 @@ async function handleEnrichRequest(request, env, ctx) {
         success: true,
         media_id: mediaId || null,
         filename: filename,
+        received_bytes: typeof image === 'string' ? image.length : (image?.byteLength || image?.length || 0),
         enrichment: enrichment
       })
     };

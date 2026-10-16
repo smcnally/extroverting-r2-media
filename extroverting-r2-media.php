@@ -82,17 +82,19 @@ function ext_r2_media_deactivate() {
  * @return void
  */
 function ext_r2_media_register_settings() {
+	// NOTE: the group must match the settings page slug ('media') — options.php
+// only saves options whitelisted under the page's own group.
 	register_setting(
-		'ext_r2_media',
+		'media',
 		'ext_ai_worker_url',
 		[
 			'type'              => 'string',
 			'sanitize_callback' => 'esc_url_raw',
 		]
 	);
-	register_setting( 'ext_r2_media', 'ext_ai_worker_token', [ 'type' => 'string' ] );
+	register_setting( 'media', 'ext_ai_worker_token', [ 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ] );
 	register_setting(
-		'ext_r2_media',
+		'media',
 		'ext_exiftool_binary',
 		[
 			'type'              => 'string',
