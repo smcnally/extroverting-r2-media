@@ -10,6 +10,8 @@
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       extroverting-r2-media
+ * Domain Path:       /languages
+ * Update URI:        https://github.com/smcnally/extroverting-r2-media
  *
  * @package Extroverting\R2Media
  */
@@ -26,6 +28,10 @@ if ( ! class_exists( 'Ext_Exif_Writer' ) ) {
 
 if ( ! class_exists( 'Ext_AI_Enrichment' ) ) {
 	require_once EXT_R2_MEDIA_DIR . 'includes/class-ext-ai-enrichment.php';
+}
+
+if ( ! class_exists( 'Ext_R2_Rest' ) ) {
+	require_once EXT_R2_MEDIA_DIR . 'includes/class-ext-r2-rest.php';
 }
 
 register_activation_hook( __FILE__, 'ext_r2_media_activate' );
@@ -45,10 +51,53 @@ function ext_r2_media_boot() {
 
 	$booted = true;
 
+	load_plugin_textdomain( 'extroverting-r2-media', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
+
 	new Ext_AI_Enrichment();
+	new Ext_R2_Rest();
 	add_action( 'admin_init', 'ext_r2_media_register_settings' );
+	add_action( 'enqueue_block_editor_assets', 'ext_r2_media_enqueue_editor_assets' );
+	add_action( 'admin_enqueue_scripts', 'ext_r2_media_enqueue_media_modal' );
 }
 add_action( 'plugins_loaded', 'ext_r2_media_boot' );
+
+/**
+ * Enqueue a tiny editor script that shows enrichment status in the media modal.
+ *
+ * @return void
+ */
+function ext_r2_media_enqueue_media_modal() {
+	$screen = get_current_screen();
+	if ( ! $screen || 'attachment' !== $screen->id && 'upload' !== $screen->id ) {
+		return;
+	}
+	wp_enqueue_script(
+		'ext-r2-media-modal',
+		plugins_url( 'assets/js/media-modal.js', __FILE__ ),
+		array( 'jquery' ),
+		EXT_R2_MEDIA_VERSION,
+		true
+	);
+	wp_localize_script( 'ext-r2-media-modal', 'ExtR2Media', array(
+		'restUrl'   => esc_url_raw( rest_url( 'extroverting-r2/v1/' ) ),
+		'restNonce' => wp_create_nonce( 'wp_rest' ),
+	) );
+}
+
+/**
+ * Enqueue block-editor panel for attachment enrichment status.
+ *
+ * @return void
+ */
+function ext_r2_media_enqueue_editor_assets() {
+	wp_enqueue_script(
+		'ext-r2-media-editor',
+		plugins_url( 'assets/js/editor-panel.js', __FILE__ ),
+		array( 'wp-plugins', 'wp-edit-post', 'wp-components', 'wp-data', 'wp-element', 'wp-i18n' ),
+		EXT_R2_MEDIA_VERSION,
+		true
+	);
+}
 
 /**
  * Activation: seed default options and schedule the batch cron.
