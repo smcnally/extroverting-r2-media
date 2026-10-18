@@ -38,14 +38,25 @@ class Ext_R2_Rest {
 			'_ext_ai_enriched'     => 'string',
 		);
 		foreach ( $keys as $key => $type ) {
-			register_post_meta( 'attachment', $key, array(
-				'show_in_rest' => true,
-				'single'       => true,
-				'type'         => $type,
+			$args = array(
+				'single'        => true,
+				'type'          => $type,
 				'auth_callback' => function () {
 					return current_user_can( 'edit_posts' );
 				},
-			) );
+			);
+			// Array meta must declare items schema or WP 5.3+ throws a notice.
+			if ( 'array' === $type ) {
+				$args['show_in_rest'] = array(
+					'schema' => array(
+						'type'  => 'array',
+						'items' => array( 'type' => 'string' ),
+					),
+				);
+			} else {
+				$args['show_in_rest'] = true;
+			}
+			register_post_meta( 'attachment', $key, $args );
 		}
 	}
 
