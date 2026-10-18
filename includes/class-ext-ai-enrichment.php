@@ -157,6 +157,7 @@ class Ext_AI_Enrichment {
 		// Update status.
 		update_post_meta( $attachment_id, '_ext_ai_status', 'completed' );
 		update_post_meta( $attachment_id, '_ext_ai_enriched', current_time( 'mysql' ) );
+		delete_post_meta( $attachment_id, '_ext_ai_needs_enrichment' );
 
 		return $enrichment;
 	}
